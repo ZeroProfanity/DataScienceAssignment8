@@ -1,0 +1,166 @@
+---
+title: "Machine learning on wearables data set"
+author: "ZeroProfanity"
+date: "16 april 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Summary
+In this report, machine learning is used to determine the quality of an arm curl, based on input from several sensors on the body and the dumbbell. It is demonstrated, that accuracies of over 99% are possible when using a random forest model.
+
+### Introduction
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, a data set is examined, containing data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. A machine learning model is used on these measurements to predict the manner in which they did an exercise. 
+
+### Data set
+The [data set](http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises) contains measurement data from several accelerometers on the body and the dumbbell used. Each of six volunteers is asked to perform arm curls in one of five ways:  
+
+* The correct way, holding the body and the elbows still, and moving the weight through the full range of motion.  
+* Throwing the elbows forward to support the weight.  
+* Lifting the weight only until halfway.  
+* Lifting the weight only from halfway up.  
+* Throwing the hips forward to support the weight.  
+
+In total, the training data set contains 19622 lines of data, with 160 fields each. Amongst these fields are:  
+
+* 1 field containing the way the curl was performed.  
+* 7 fields containing the metadata for the measurement (record id, timestaps, user name, new window indicator)
+* 52 fields containing the accelerometer measurements throughout the movement
+* 100 fields containing summarizing data (only filled out when the new window indicator contains the value "yes")  
+
+A total of 19216 rows are marked having new window indicator "no", and 406 rows have value "yes". This column indicates whether or not an observation is the start of a new curl, or part of the same curl as the previous observation. This means, that subsequent observations are typically not independent of one another.    
+
+The test set, on which the prediction must be done, contains 20 rows, all having new window indicator "no". 
+
+### Data handling 
+```{r echo=FALSE, warning = FALSE}
+### SET RUN PARAMETERS
+folder.data <- "~/DataScienceCourse/ProgrammingAssignment8/datasets/"
+file.data <- "pml-training.csv"
+file.test <- "pml-testing.csv"
+full.name.data <- paste0(folder.data, file.data)
+full.name.test <- paste0(folder.data, file.test)
+
+### LOAD DATA SET
+df.train.raw <- read.csv(full.name.data, na.strings = "NA")
+df.test.raw <- read.csv(full.name.test, na.string = "NA")
+
+### DATA SELECTION
+### First remove the new window lines
+df.train.temp <- df.train.raw[as.character(df.train.raw$new_window)=="no",]
+df.train.clean <- data.frame(df.train.temp$X)
+df.test.clean <- data.frame(df.test.raw$X)
+name.vector <- names(df.train.temp)[1]
+
+for(i in 2:dim(df.train.temp)[2]){
+  sum.2 <- sum(df.train.temp[,i]=="")
+  if (!is.na(sum.2)){
+    if(sum.2 == 0){
+      df.train.clean <- cbind(df.train.clean, df.train.temp[,i])
+      df.test.clean <- cbind(df.test.clean, df.test.raw[,i])
+      name.vector <- cbind(name.vector, names(df.train.temp)[i])
+    }
+  }
+}
+names(df.train.clean) <- name.vector
+names(df.test.clean) <- name.vector
+df.train.select <- df.train.clean[,-(1:7)]
+df.test <- df.test.clean[,-(1:7)]
+
+### Remove measurement 5270 which seems to be an outlier
+df.train.select <- df.train.select[-5270]
+```
+The following steps are executed before the data is used:    
+
+* The records where column new_window has value 'yes' are removed, as these records are fundamentally different from the records with 'no' values, that are far in the majority in the training set and are 100% of the test set.   
+* Subsequently, the 100 columns that are only applicable for the cases in which the new window variable has value "yes", are removed from the training set.  
+* The metadata columns are removed from the training set, as these contain no information on the accelerometer readings.  
+* From the resulting set, one record (index 5270 in the figure below) seems to contain a few strong outliers, possibly by accelerometer malfunction. This record is therefore removed from the set.  
+* No further columns are removed from the data set. I don't have any prior knowledge about with variables may or may not contain usable information on the correctness of the movement. Therefore, I have chosen to use all variables in the estimation. This may lead to some overfitting.  
+
+Finally, the data set is split randomly into two parts:  
+
+* 14414 observations are used to train the model on.
+* 4802 observations are used as a validation set, to establish the out-of-sample error rate and compare the model accuracies.    
+```{r echo = FALSE, fig.cap="Figure 1 - One observation had several strong outliers"}
+par(mfrow = c(2,2))
+plot(df.train.select[,43], ylab = "total_accel_forearm", main = "Value of total_accel_forearm")
+plot(df.train.select[,44], ylab = "gyros_forearm_x", main = "Value of gyros_forearm_x")
+plot(df.train.select[,45], ylab = "gyros_forearm_y", main = "Value of gyros_forearm_y")
+plot(df.train.select[,46], ylab = "gyros_forearm_z", main = "Value of gyros_forearm_z")
+par(mfrow = c(1,1))
+```
+
+### Model choices
+```{r echo=FALSE, warning=FALSE}
+### SPLIT THE TRAINING DATA SET IN A TRAINING SET AND A VALIDATION SET
+suppressMessages(require(caret))
+set.seed(42)
+partition <- createDataPartition(df.train.select$classe, p = 3/4)[[1]]
+df.train <- df.train.select[partition,]
+df.validation <- df.train.select[-partition,]
+```
+Two machine learning algorithms will be used to make predictions:
+
+* The first model uses gradient boosting, as in the gbm method in the train function of the `caret` R package. 
+* The second model is a random forest model, as in the rf method in the train function of the `caret` R package. 
+
+These models are chosen, because they typically produce quite accurate predictions.
+
+All training runs will be done in order to maximize accuracy. This may lead to somewhat longer runtimes.
+
+The `train` function is configured to use 3-fold crossvalidation. This is done in order to keep the runtime limited, as compared to other methods like bootstrapping and higher order k-fold crossvalidation. Furthermore, using this method, the folds are large enough to contain observations on all types of curls.    
+
+No preprocessing of the data is done, other than the preprocessing described in the section on data handling. Furthermore, no additional model tuning is done by hand. Some model tuning (for example, the number of iterations for boosting) is performed automatically, however.  
+
+### Model results: Boosting
+```{r cache=TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+### MODEL 2 - BOOSTING
+tc.2 <- trainControl(method = "cv", number = 3)
+model.2 <- suppressMessages(train(classe ~ ., data = df.train, method = "gbm", trControl = tc.2, verbose = FALSE))
+pred.2 <- predict(model.2, df.validation)
+compare.mod.2<-cbind(pred.2,df.validation$classe)
+conf.Matrix.2 <- confusionMatrix(compare.mod.2[,1], compare.mod.2[,2])
+```
+The first model used a gradient boosting algorithm. The confusion matrix and accuracy metrics are shown below. Further figures can be found in the appendix. The accuracy is shown to be quite good, at approximately 96% on the training set and 97% on the validation set.  
+```{r cache= TRUE, fig.cap = "Figure 2 - Details of the gradient boosting model"}
+conf.Matrix.2
+```
+
+### Model results: Random forest
+The second model used a random forest algorithm. Again, the most important results are shown below with further results in the appendix. The accuracy of the model is excellent, at approximately 99% on both the training set and the validation set.  
+```{r cache=TRUE, message=FALSE, echo=FALSE, warning=FALSE}
+tc.3 <- trainControl(method = "cv", number = 3)
+model.3 <- train(classe ~ ., method = "rf", data = df.train, trControl = tc.3)
+pred.3 <- predict(model.3, df.validation)
+compare.mod.3<-cbind(pred.3,df.validation$classe)
+conf.Matrix.3 <- confusionMatrix(compare.mod.3[,1], compare.mod.3[,2])
+```
+```{r fig.cap = "Figure 3 - Random forest model, confusion matrix and accuracy"}
+conf.Matrix.3
+```
+
+### Conclusions
+Both the random forest model and the gradient boosting model give high accuracy results. For the final prediction, which is to be performed on the 20 observation test set, the random forest model will be used. This model is chosen over the gradient boosting model due to its superior accuracy.  
+
+### References
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+### Appendix
+#### Gradient boosting model full results
+```{r  message=FALSE, warning=FALSE, fig.cap = "Figure 2 - Details of the gradient boosting model"}
+model.2
+varImp(model.2)
+plot(model.2)
+```
+
+#### Random forest model full results
+```{r  message=FALSE, warning=FALSE, fig.cap = "Figure 3 - Details of the random forest model"}
+model.3
+varImp(model.3)
+plot(model.3)
+```
+
